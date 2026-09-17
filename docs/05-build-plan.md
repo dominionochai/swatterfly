@@ -30,6 +30,8 @@ Use Isaac Lab on Nebius for controlled RL experiments, spending the Nebius $50 i
 
 Use Cosmos-Transfer2.5 to augment sim-to-real appearance while preserving depth and segmentation structure. Keep source labels and augmentation metadata. Compare original, augmented, and held-out real-like validation sets; augmentation is not permission to invent safety-critical data.
 
+For Nebius Token Factory, set `base_url` to `https://api.tokenfactory.nebius.com/v1/` and read the credential from the `NEBIUS_API_KEY` environment variable, not bare `OPENAI_API_KEY`. This configuration applies to GLM/DeepSeek and to OpenAI-SDK tools including IsaacLabEureka; those tools must be explicitly patched to use the Token Factory base URL.
+
 ## 8. Tavily pre-mission intelligence
 
 Use Tavily for pre-mission intelligence such as NOTAMs, weather, and known threats. Store query time, source context, and confidence in the mission brief. Treat the result as advisory and staleable; it cannot authorize flight or replace local regulations, operator judgment, or onboard sensing.
