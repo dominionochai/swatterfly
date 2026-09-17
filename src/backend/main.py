@@ -19,7 +19,13 @@ settings = get_settings()
 replay_builder = SyntheticReplay(settings)
 agent = NebiusAgent(settings)
 app = FastAPI(title="Swatterfly Phase 1 Backend", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list, allow_credentials=False, allow_methods=["GET"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=False,
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
@@ -46,13 +52,28 @@ async def telemetry_stream(request: Request) -> StreamingResponse:
     replay = replay_builder.build()
 
     async def events() -> AsyncIterator[str]:
-        for frame in replay.frames:
-            if await request.is_disconnected():
-                break
-            yield f"data: {frame.model_dump_json()}\\n\\n"
-            await asyncio.sleep(settings.replay_interval_seconds)
+        try:
+            yield ": connected\nretry: 3000\n\n"
+            for frame in replay.frames:
+                if await request.is_disconnected():
+                    return
+                yield f"data: {frame.model_dump_json()}\n\n"
+                await asyncio.sleep(settings.replay_interval_seconds)
+                if not await request.is_disconnected():
+                    yield ": keep-alive\n\n"
+        except asyncio.CancelledError:
+            logger.debug("Telemetry stream cancelled")
+            return
 
-    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream; charset=utf-8",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/agent/status", response_model=AgentStatus)
