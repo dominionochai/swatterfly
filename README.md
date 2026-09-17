@@ -2,13 +2,38 @@
 
 Swatterfly is a fly/dragonfly-inspired autonomous interceptor drone project for the Nebius x NVIDIA Global AI Hackathon. The project explores how insect vision and pursuit behavior can become a safety-first, explainable flight stack.
 
+## Quick Start
+
+Start the backend from the repository root:
+
+```bash
+cd src/backend
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
+pip install -r requirements.txt
+cd ../..
+uvicorn src.backend.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Open the backend API docs at http://127.0.0.1:8000/docs.
+
+In another terminal, start the dashboard:
+
+```bash
+cd src/dashboard
+npm install
+NEXT_PUBLIC_BACKEND_URL=http://localhost:8000 npm run dev
+```
+
+Open the dashboard at http://localhost:3000. `NEBIUS_API_KEY` is optional for the fake telemetry/cockpit demo; only the Nebius agent ping requires it.
+
 ## The three-layer brain
 
 - **1 REFLEXES = fly LGMD looming** — a fast, low-latency visual threat signal that can trigger an evasive or intercept response.
 - **2 INSTINCTS = dragonfly predictive interception** — target tracking and body-alignment behaviors that estimate where a moving target will be and guide the pursuer toward that future path.
 - **3 JUDGMENT = NVIDIA model** — a higher-level model that briefs the mission, selects modes, explains uncertainty, and respects hard safety gates.
 
-we trained the drone's eyes with Nvidia Cosmos, its instincts with Isaac on Nebius, brief it with Tavily
+We trained the drone's eyes with Nvidia Cosmos, its instincts with Isaac on Nebius, brief it with Tavily
 
 ## Stack roles
 

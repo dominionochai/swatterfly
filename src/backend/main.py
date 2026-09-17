@@ -24,21 +24,25 @@ app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list, allo
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    """Return a lightweight liveness response for the read-only backend."""
     return {"status": "ok", "mode": "synthetic-read-only"}
 
 
 @app.get("/telemetry/snapshot", response_model=ReplayFile)
 def telemetry_snapshot() -> ReplayFile:
+    """Build one deterministic synthetic telemetry replay for demo mode."""
     return replay_builder.build()
 
 
 @app.get("/safety-gate", response_model=SafetyGateState)
 def safety_gate() -> SafetyGateState:
+    """Return the explicit Phase 1 safety boundary."""
     return SafetyGateState()
 
 
 @app.get("/telemetry/stream")
 async def telemetry_stream(request: Request) -> StreamingResponse:
+    """Stream synthetic telemetry frames as server-sent events."""
     replay = replay_builder.build()
 
     async def events() -> AsyncIterator[str]:
@@ -53,9 +57,11 @@ async def telemetry_stream(request: Request) -> StreamingResponse:
 
 @app.get("/agent/status", response_model=AgentStatus)
 def agent_status() -> AgentStatus:
+    """Return safe Nebius configuration metadata without revealing secrets."""
     return agent.status()
 
 
 @app.get("/agent/ping", response_model=AgentPingResponse)
 async def agent_ping() -> AgentPingResponse:
+    """Run the optional Nebius model ping with primary/fallback handling."""
     return await agent.ping()
