@@ -8,6 +8,20 @@ version = "0.1.0"
 description = "Research scaffold for an insect-inspired autonomous interceptor drone"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
+dependencies = [
+  "numpy>=2.0,<3",
+  "matplotlib>=3.8,<4",
+]
+
+[project.optional-dependencies]
+# v2e is intentionally optional at install time: the deterministic renderer
+# keeps the Stage-1 baseline runnable on Windows without CUDA/Linux tooling.
+event-camera = [
+  "v2e @ git+https://github.com/SensorsINI/v2e.git",
+]
+dev = [
+  "pytest>=8,<9",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
