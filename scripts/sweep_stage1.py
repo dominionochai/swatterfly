@@ -16,6 +16,7 @@ import json
 import os
 import sys
 from dataclasses import asdict
+from inspect import signature
 from itertools import product
 from pathlib import Path
 from typing import Iterable
@@ -53,7 +54,7 @@ def _verified_v2e_available() -> bool:
     try:
         return v2e_is_available()
     except Exception as exc:  # pragma: no cover - depends on optional package
-        print(f"[sweep] v2e import failed ({exc}); using the local renderer.", file=sys.stderr)
+        print(f"[sweep] v2e import failed ({exc}); using the deterministic local renderer.", file=sys.stderr)
         return False
 
 
@@ -61,7 +62,7 @@ def _select_backend(requested: str) -> str:
     if requested == "auto":
         requested = "v2e" if _verified_v2e_available() else "synthetic"
     if requested == "v2e" and not _verified_v2e_available():
-        print("[sweep] v2e was requested but did not import; falling back to the local renderer.", file=sys.stderr)
+        print("[sweep] v2e was requested but did not import; falling back to the deterministic local renderer.", file=sys.stderr)
         return "synthetic"
     if requested == "v2e":
         print("[sweep] v2e imported successfully; using the v2e-compatible backend.")
@@ -205,7 +206,11 @@ def _write_plot(path: Path, rows: list[dict[str, object]]) -> None:
         for latency in latencies
     ]
     figure, axis = plt.subplots(figsize=(7, 4))
-    axis.boxplot(groups, labels=[f"{latency:g}s" for latency in latencies], showfliers=False)
+    labels = [f"{latency:g}s" for latency in latencies]
+    # Matplotlib 3.9 renamed ``labels`` to ``tick_labels``.  Inspect the
+    # installed API so the baseline also works with older Matplotlib releases.
+    label_parameter = "tick_labels" if "tick_labels" in signature(axis.boxplot).parameters else "labels"
+    axis.boxplot(groups, **{label_parameter: labels}, showfliers=False)
     axis.set_xlabel("Injected event latency")
     axis.set_ylabel("Absolute tau error (%)")
     axis.set_title("Stage-1 tau estimate error across full parameter sweep")

@@ -28,7 +28,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          echo "Attempting CPU-only torch installation for optional v2e support."
+          echo "Attempting CPU-only torch install for optional v2e support."
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
           torch_status=$?
           if [ "$torch_status" -ne 0 ]; then
@@ -39,7 +39,7 @@ jobs:
           if [ "$v2e_status" -eq 0 ]; then
             echo "Optional v2e installation completed."
           else
-            echo "Optional v2e installation failed (status $v2e_status); the sweep will use the local renderer."
+            echo "Optional v2e installation failed (status $v2e_status); the sweep will use the deterministic local renderer."
           fi
           exit 0
 
@@ -50,7 +50,7 @@ jobs:
           try:
               import v2e
           except Exception as exc:
-              print(f"v2e import failed: {exc}")
+              print(f"v2e import unavailable ({exc}); using the deterministic local renderer.")
               raise SystemExit(1)
           print("v2e imported successfully; selecting the v2e-compatible backend.")
           PY
@@ -58,7 +58,7 @@ jobs:
             echo "SWATTERFLY_EVENT_BACKEND=v2e" >> "$GITHUB_ENV"
             echo "SWATTERFLY_EVENT_BACKEND=v2e"
           else
-            echo "v2e did not import successfully; selecting the deterministic local renderer."
+            echo "v2e unavailable; selecting the deterministic synthetic backend."
             echo "SWATTERFLY_EVENT_BACKEND=synthetic" >> "$GITHUB_ENV"
             echo "SWATTERFLY_EVENT_BACKEND=synthetic"
           fi
@@ -69,7 +69,7 @@ jobs:
 
       - name: Run Phase-3 baseline sweep
         id: sweep
-        if: always()
+        if: steps.tests.outcome == 'success'
         shell: bash
         run: |
           mkdir -p data/phase3_baseline
@@ -79,7 +79,9 @@ jobs:
             --output data/phase3_baseline
 
       - name: Configure git identity and commit exact baseline artifacts
-        if: ${{ steps.tests.outcome == 'success' && steps.sweep.outcome == 'success' }}
+        id: commit
+        if: steps.tests.outcome == 'success' && steps.sweep.outcome == 'success'
+        continue-on-error: true
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
@@ -97,8 +99,8 @@ jobs:
           git commit -m "Update Phase-3 baseline artifacts"
           git push origin HEAD:main
 
-      - name: Upload baseline artifacts
-        if: always()
+      - name: Upload baseline artifacts when commit or push fails
+        if: always() && steps.sweep.outcome == 'success' && steps.commit.outcome != 'success'
         uses: actions/upload-artifact@v4
         with:
           name: phase3-baseline
