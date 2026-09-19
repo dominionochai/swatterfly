@@ -26,13 +26,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
-from sim.events import (  # noqa: E402
+from sim.events import (
     ApproachScenario,
     EventStream,
     estimate_tau,
     generate_synthetic_events,
     generate_trajectory,
-    v2e_is_available,
 )
 
 SPEEDS_MPS = (0.5, 1.0, 2.0, 4.0)
@@ -50,25 +49,47 @@ def _write_csv(path: Path, fieldnames: list[str], rows: Iterable[dict[str, objec
 
 
 def _verified_v2e_available() -> bool:
-    """Probe optional v2e without letting a broken import abort the baseline."""
+    """Probe supported v2e package layouts without breaking the baseline."""
     try:
-        return v2e_is_available()
-    except Exception as exc:  # pragma: no cover - depends on optional package
-        print(f"[sweep] v2e import failed ({exc}); using the deterministic local renderer.", file=sys.stderr)
+        import v2e  # type: ignore[import-not-found,unused]
+    except ImportError as v2e_exc:  # pragma: no cover - depends on optional package
+        try:
+            import v2ecore  # type: ignore[import-not-found,unused]
+        except ImportError as v2ecore_exc:  # pragma: no cover - optional package
+            print(
+                f"[sweep] v2e import failed ({v2e_exc}); v2ecore import failed "
+                f"({v2ecore_exc}); falling back to the deterministic renderer.",
+                file=sys.stderr,
+            )
+            return False
+        print(
+            "[sweep] v2e has no top-level import; v2ecore is present but exposes "
+            "no stable renderer API here; falling back to the deterministic "
+            "renderer.",
+            file=sys.stderr,
+        )
         return False
+    return True
 
 
 def _select_backend(requested: str) -> str:
     if requested == "auto":
         requested = "v2e" if _verified_v2e_available() else "synthetic"
     if requested == "v2e" and not _verified_v2e_available():
-        print("[sweep] v2e was requested but did not import; falling back to the deterministic local renderer.", file=sys.stderr)
+        print(
+            "[sweep] v2e was requested but neither supported import is usable; "
+            "falling back to the deterministic local renderer.",
+            file=sys.stderr,
+        )
         return "synthetic"
     if requested == "v2e":
         print("[sweep] v2e imported successfully; using the v2e-compatible backend.")
         return "v2e"
     if requested == "synthetic":
-        print("[sweep] using the deterministic local renderer (v2e unavailable or not selected).")
+        print(
+            "[sweep] using the deterministic local renderer (v2e unavailable or "
+            "not selected)."
+        )
         return "synthetic"
     raise ValueError(f"unsupported event backend: {requested}")
 
@@ -99,7 +120,10 @@ def run_sweep(output: Path, seed: int = 20260918, backend: str = "auto") -> dict
         )
         trajectory = generate_trajectory(scenario)
         stream: EventStream = generate_synthetic_events(
-            trajectory, scenario, seed=seed + run_id, backend=selected_backend
+            trajectory,
+            scenario,
+            seed=seed + run_id,
+            backend=selected_backend,
         )
         try:
             tau_hat = estimate_tau(stream.events, scenario)
@@ -202,13 +226,16 @@ def _write_plot(path: Path, rows: list[dict[str, object]]) -> None:
 
     latencies = sorted({float(row["injected_latency_s"]) for row in rows})
     groups = [
-        [float(row["error_pct"]) for row in rows if float(row["injected_latency_s"]) == latency and row["error_pct"] == row["error_pct"]]
+        [
+            float(row["error_pct"])
+            for row in rows
+            if float(row["injected_latency_s"]) == latency
+            and row["error_pct"] == row["error_pct"]
+        ]
         for latency in latencies
     ]
     figure, axis = plt.subplots(figsize=(7, 4))
     labels = [f"{latency:g}s" for latency in latencies]
-    # Matplotlib 3.9 renamed ``labels`` to ``tick_labels``.  Inspect the
-    # installed API so the baseline also works with older Matplotlib releases.
     label_parameter = "tick_labels" if "tick_labels" in signature(axis.boxplot).parameters else "labels"
     axis.boxplot(groups, **{label_parameter: labels}, showfliers=False)
     axis.set_xlabel("Injected event latency")
