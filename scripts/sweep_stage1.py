@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 from dataclasses import asdict
 from itertools import product
@@ -47,10 +48,35 @@ def _write_csv(path: Path, fieldnames: list[str], rows: Iterable[dict[str, objec
         writer.writerows(rows)
 
 
-def run_sweep(output: Path, seed: int = 20260918) -> dict[str, object]:
+def _verified_v2e_available() -> bool:
+    """Probe optional v2e without letting a broken import abort the baseline."""
+    try:
+        return v2e_is_available()
+    except Exception as exc:  # pragma: no cover - depends on optional package
+        print(f"[sweep] v2e import failed ({exc}); using the local renderer.", file=sys.stderr)
+        return False
+
+
+def _select_backend(requested: str) -> str:
+    if requested == "auto":
+        requested = "v2e" if _verified_v2e_available() else "synthetic"
+    if requested == "v2e" and not _verified_v2e_available():
+        print("[sweep] v2e was requested but did not import; falling back to the local renderer.", file=sys.stderr)
+        return "synthetic"
+    if requested == "v2e":
+        print("[sweep] v2e imported successfully; using the v2e-compatible backend.")
+        return "v2e"
+    if requested == "synthetic":
+        print("[sweep] using the deterministic local renderer (v2e unavailable or not selected).")
+        return "synthetic"
+    raise ValueError(f"unsupported event backend: {requested}")
+
+
+def run_sweep(output: Path, seed: int = 20260918, backend: str = "auto") -> dict[str, object]:
     """Run every speed x size x lighting x noise x latency combination."""
 
     output.mkdir(parents=True, exist_ok=True)
+    selected_backend = _select_backend(backend)
     result_rows: list[dict[str, object]] = []
     trajectory_rows: list[dict[str, object]] = []
     event_rows: list[dict[str, object]] = []
@@ -72,7 +98,7 @@ def run_sweep(output: Path, seed: int = 20260918) -> dict[str, object]:
         )
         trajectory = generate_trajectory(scenario)
         stream: EventStream = generate_synthetic_events(
-            trajectory, scenario, seed=seed + run_id, backend="auto"
+            trajectory, scenario, seed=seed + run_id, backend=selected_backend
         )
         try:
             tau_hat = estimate_tau(stream.events, scenario)
@@ -158,8 +184,9 @@ def run_sweep(output: Path, seed: int = 20260918) -> dict[str, object]:
             "injected_latency_s": LATENCIES_S,
         },
         "ground_truth_definition": "l=object size, x=initial distance, u=approach speed, tau=x/u",
-        "event_backend": "v2e-compatible-synthetic",
-        "v2e_available_at_generation": v2e_is_available(),
+        "requested_event_backend": backend,
+        "event_backend": selected_backend,
+        "v2e_available_at_generation": _verified_v2e_available(),
     }
     (output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     _write_plot(output / "error_by_latency.png", result_rows)
@@ -192,8 +219,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("data/phase3_baseline"))
     parser.add_argument("--seed", type=int, default=20260918)
+    parser.add_argument(
+        "--backend",
+        choices=("auto", "synthetic", "v2e"),
+        default=os.environ.get("SWATTERFLY_EVENT_BACKEND", "auto"),
+        help="event backend; v2e is selected only after a successful import probe",
+    )
     args = parser.parse_args()
-    metadata = run_sweep(args.output, seed=args.seed)
+    metadata = run_sweep(args.output, seed=args.seed, backend=args.backend)
     print(json.dumps(metadata, indent=2))
 
 
