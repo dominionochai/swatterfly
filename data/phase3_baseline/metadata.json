@@ -1,0 +1,36 @@
+{
+  "seed": 20260918,
+  "run_count": 324,
+  "parameter_grid": {
+    "approach_speed_mps": [
+      0.5,
+      1.0,
+      2.0,
+      4.0
+    ],
+    "object_size_m": [
+      0.04,
+      0.08,
+      0.16
+    ],
+    "lighting": [
+      0.5,
+      1.0,
+      2.0
+    ],
+    "sensor_noise_px": [
+      0.0,
+      0.5,
+      1.5
+    ],
+    "injected_latency_s": [
+      0.0,
+      0.005,
+      0.02
+    ]
+  },
+  "ground_truth_definition": "l=object size, x=initial distance, u=approach speed, tau=x/u",
+  "requested_event_backend": "synthetic",
+  "event_backend": "synthetic",
+  "v2e_available_at_generation": false
+}
