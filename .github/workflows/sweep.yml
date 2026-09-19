@@ -24,44 +24,19 @@ jobs:
       - name: Install project and development dependencies
         run: python -m pip install -e ".[dev]"
 
-      - name: Attempt optional v2e installation
+      - name: Document optional v2e package layout
         shell: bash
         run: |
-          set +e
-          echo "Attempting CPU-only torch install for optional v2e support."
-          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-          torch_status=$?
-          if [ "$torch_status" -ne 0 ]; then
-            echo "CPU torch install failed (status $torch_status); continuing with the v2e attempt."
-          fi
-          python -m pip install -e ".[event-camera]"
-          v2e_status=$?
-          if [ "$v2e_status" -eq 0 ]; then
-            echo "Optional v2e installation completed."
-          else
-            echo "Optional v2e installation failed (status $v2e_status); the sweep will use the deterministic local renderer."
-          fi
-          exit 0
+          cat <<'EOF'
+          v2e 1.5.1 setup.py uses find_packages() for v2ecore and installs v2e.py as a script; it does not install a top-level v2e import. The sweep therefore preserves the deterministic synthetic backend.
+          EOF
 
-      - name: Select a verified event backend
+      - name: Select deterministic event backend
         shell: bash
         run: |
-          if python - <<'PY'
-          try:
-              import v2e
-          except Exception as exc:
-              print(f"v2e import unavailable ({exc}); using the deterministic local renderer.")
-              raise SystemExit(1)
-          print("v2e imported successfully; selecting the v2e-compatible backend.")
-          PY
-          then
-            echo "SWATTERFLY_EVENT_BACKEND=v2e" >> "$GITHUB_ENV"
-            echo "SWATTERFLY_EVENT_BACKEND=v2e"
-          else
-            echo "v2e unavailable; selecting the deterministic synthetic backend."
-            echo "SWATTERFLY_EVENT_BACKEND=synthetic" >> "$GITHUB_ENV"
-            echo "SWATTERFLY_EVENT_BACKEND=synthetic"
-          fi
+          echo "v2e import is not provided by the v2e 1.5.1 distribution; selecting the deterministic synthetic backend."
+          echo "SWATTERFLY_EVENT_BACKEND=synthetic" >> "$GITHUB_ENV"
+          echo "SWATTERFLY_EVENT_BACKEND=synthetic"
 
       - name: Run tests
         id: tests
