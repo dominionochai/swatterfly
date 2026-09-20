@@ -64,3 +64,44 @@ The stated submission deadline is **Oct 30 2026 10am PDT**.
 ## Status
 
 The modules under `src/` deliberately expose small, testable interfaces while marking research implementations as TODOs. The documentation distinguishes measured or cited behavior from assumptions and stretch goals; placeholder code must not be treated as flight-ready.
+
+## Phase 2 closeout and Phase 3 looming baseline (session notes)
+
+Work committed in this repository as of the latest two commits:
+
+- **Phase 2 closeout:** removed the dead legacy aliases from `src/sim/point_mass.py`
+  (`PointMassState = PointMassState`, `step_point_mass_legacy`, `step_point_mass_original`).
+  Verified after removal: editable install works, `pytest tests src/backend/tests` reports
+  **6 passed**, and `scripts/sweep_stage1.py` runs unchanged (324 runs, all
+  `estimate_status == "ok"`, `error_by_latency.png` regenerated).
+- **Phase 3 looming baseline:** added `src/lgmd/network.py` (Gabbiani canonical firing
+  model, `firing ∝ ψ(t−δ)·e^(−α·θ(t−δ))`, `α = 1/tan(θ_thres/2)`, θ_thres 15–40°, δ
+  15–35 ms, internal trigger/release hysteresis) and `scripts/compare_lgmd.py` to measure
+  it against the existing engineering scalar approximation (`eta = theta_dot / theta`)
+  on the canonical Phase 2 dataset at `data/phase3_baseline/`. Full results and caveats
+  are in `docs/phase3-looming-baseline.md`; `tests/test_lgmd_network.py` adds 4 tests
+  (full suite: **10 passed**).
+
+Key findings from the Phase 3 comparison (324 cases, both detectors):
+
+- Scalar: 50% detection, 0 false triggers, mean trigger→peak latency 0.83 s. It is a
+  time-to-contact gate (`eta = 1/tau`), so it only fires for runs reaching `tau <= 2 s`
+  in the sweep window (speeds 2.0/4.0 m/s); slow runs are missed.
+- Network: 33% detection (only the smallest-object runs), 0 false triggers, fires at the
+  first frame (latency 0.000 s). With this dataset's `projected_radius_px` theta proxy,
+  the exponential `exp(−α·θ)` suppresses the score for larger theta, so it behaves as a
+  size gate. Not a preprocessing claim — a measured property of the model as configured.
+- Lighting/noise/latency axes are flat for both detectors because those parameters only
+  affect the event stream (`events.csv`), which these trajectory-driven detectors do not
+  consume. Zero false-trigger rate reflects the noise-free analytic trajectories.
+
+Known pre-existing issues (noted, not yet fixed):
+
+- `scripts/phase3_baseline_analysis.py:28` imports `LookingSample` from `lgmd.scalar_eta`,
+  but the class is `LoomingSample` (`src/lgmd/scalar_eta.py:15`) — the script crashes on
+  import and is not covered by CI.
+- `.github/workflows/ci.yml` installs only `requirements*.txt` and runs pytest with
+  `PYTHONPATH=.`; root tests importing `sim` (e.g. `tests/test_sim_stage1.py`) will fail
+  collection there. The sweep workflow avoids this via `pip install -e ".[dev]"`.
+- v2e is unusable on this stack (no top-level import in the 1.5.1 distribution); the
+  deterministic synthetic event backend is the canonical path.
