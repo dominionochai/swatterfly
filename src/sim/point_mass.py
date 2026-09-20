@@ -20,10 +20,6 @@ class PointMassState:
     vy: float = 0.0
 
 
-# Preserve the original public name used by the Stage-1 scaffold.
-PointMassState = PointMassState
-
-
 @dataclass(frozen=True)
 class WindScenario:
     """Constant wind velocity added to the moving object's world velocity."""
@@ -96,12 +92,6 @@ def step_point_mass(
     )
 
 
-def step_point_mass_legacy(state: PointMassState, ax: float, ay: float, dt: float) -> PointMassState:
-    """Compatibility alias for callers that want the original three-input API."""
-
-    return step_point_mass(state, ax, ay, dt)
-
-
 def simulate_point_mass(scenario: PointMassScenario) -> tuple[PointMassState, ...]:
     """Return the initial state and uniformly sampled states for a scenario."""
 
@@ -125,8 +115,3 @@ def simulate_point_mass(scenario: PointMassScenario) -> tuple[PointMassState, ..
             )
         )
     return tuple(states)
-
-
-# The original function name remains available and typed.
-def step_point_mass_original(state: PointMassState, ax: float, ay: float, dt: float) -> PointMassState:
-    return step_point_mass_legacy(state, ax, ay, dt)
