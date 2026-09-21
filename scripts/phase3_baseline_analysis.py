@@ -25,7 +25,7 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 try:
-    from lgmd.scalar_eta import LookingSample, ScalarEtaDetector
+    from lgmd.scalar_eta import LoomingSample, ScalarEtaDetector
 except ImportError as exc:  # pragma: no cover
     raise ImportError(f"cannot import detector from {src_path}: {exc}") from exc
 
@@ -256,7 +256,7 @@ def analyse(trajectories_path: Path, events_path: Path, metadata_path: Path, out
         run_start = len(samples)
         trigger_indices: list[int] = []
         for index, (_, row) in enumerate(group.iterrows()):
-            sample = LookingSample(float(theta[index]), float(theta_dot[index]), float(times[index]))
+            sample = LoomingSample(float(theta[index]), float(theta_dot[index]), float(times[index]))
             eta, tau_hat = detector.update(sample)
             triggered = not active and eta >= ETA_THRESHOLD
             if triggered:
