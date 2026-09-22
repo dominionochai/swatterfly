@@ -17,6 +17,9 @@ Detectors
   ``firing = psi(t - delta) * exp(-alpha * theta(t - delta))`` with
   ``alpha = 1 / tan(theta_thres / 2)`` and an internal hysteresis. Its own
   ``eta_on``/``eta_off`` thresholds are read off the constructed detector.
+- ``events``  -- the event-driven radial optical-flow looming detector from
+  ``lgmd.events_theta`` (Schubert et al. 2025 IOP), measuring expansion strength
+  r(t) and tau_hat = 1 / r(t) from the raw event stream.
 
 Metrics (per case, i.e. per sweep run)
 --------------------------------------
@@ -66,6 +69,12 @@ try:
     from lgmd.network import NetworkLgmdDetector
 except ImportError:  # pragma: no cover - network detector is introduced in Phase 3
     NetworkLgmdDetector = None
+
+try:
+    from lgmd.events_theta import estimate_tau as estimate_tau_events, estimate_tau_series
+except ImportError:  # pragma: no cover
+    estimate_tau_events = None
+    estimate_tau_series = None
 
 DEFAULT_DATA_DIR = ROOT / "data" / "phase3_baseline"
 
@@ -118,6 +127,14 @@ def load_event_counts(path: Path) -> dict[str, int]:
     for row in _read_csv_dicts(path):
         counts[row["run_id"]] = counts.get(row["run_id"], 0) + 1
     return counts
+
+
+def load_events_by_run(path: Path) -> dict[str, list[dict[str, str]]]:
+    rows = _read_csv_dicts(path)
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        grouped.setdefault(row["run_id"], []).append(row)
+    return grouped
 
 
 def build_detector(name: str) -> tuple[Any, float, float]:
@@ -241,6 +258,228 @@ def analyse_detector(
     return case_rows, summary, by_axis
 
 
+def run_events_case(
+    detector: Any,
+    bins: list[Any],
+    traj: dict[str, np.ndarray],
+    *,
+    eta_on: float,
+    eta_off: float,
+) -> dict[str, Any]:
+    valid_bins = [b for b in bins if b.valid]
+    if not valid_bins:
+        return {
+            "triggered": False,
+            "trigger_timestamp_s": math.nan,
+            "trigger_score": math.nan,
+            "trigger_tau_hat_s": math.nan,
+            "trigger_tau_true_s": math.nan,
+            "tau_error_pct": math.nan,
+            "peak_timestamp_s": math.nan,
+            "peak_score": -math.inf,
+            "latency_s": math.nan,
+            "pass": False,
+            "false_trigger": False,
+        }
+
+    times = np.array([b.timestamp_s for b in valid_bins], dtype=float)
+    tau_true_series = np.interp(times, traj["timestamp_s"], traj["tau_s"])
+
+    active = False
+    trigger_index: int | None = None
+    peak_score = -math.inf
+    peak_index = 0
+    trigger_score = math.nan
+    trigger_tau_hat = math.nan
+
+    for index, b in enumerate(valid_bins):
+        sample = LoomingSample(
+            theta=float(b.theta_proxy_px),
+            theta_dot=float(b.theta_dot_proxy_pxps),
+            timestamp=float(b.timestamp_s),
+        )
+        score, tau_hat = detector.update(sample)
+        if not active and score >= eta_on:
+            active = True
+            if trigger_index is None:
+                trigger_index = index
+                trigger_score = float(score)
+                trigger_tau_hat = float(tau_hat)
+        elif active and score <= eta_off:
+            active = False
+        if score > peak_score:
+            peak_score = float(score)
+            peak_index = index
+
+    if trigger_index is None:
+        return {
+            "triggered": False,
+            "trigger_timestamp_s": math.nan,
+            "trigger_score": math.nan,
+            "trigger_tau_hat_s": math.nan,
+            "trigger_tau_true_s": math.nan,
+            "tau_error_pct": math.nan,
+            "peak_timestamp_s": float(times[peak_index]),
+            "peak_score": peak_score,
+            "latency_s": math.nan,
+            "pass": False,
+            "false_trigger": False,
+        }
+
+    trigger_time = float(times[trigger_index])
+    trigger_tau_true = float(tau_true_series[trigger_index])
+    error_pct = (
+        100.0 * abs(trigger_tau_hat - trigger_tau_true) / trigger_tau_true
+        if trigger_tau_true > 0
+        else math.inf
+    )
+    peak_time = float(times[peak_index])
+    false_trigger = error_pct > TAU_TOLERANCE_PCT
+    return {
+        "triggered": True,
+        "trigger_timestamp_s": trigger_time,
+        "trigger_score": trigger_score,
+        "trigger_tau_hat_s": trigger_tau_hat,
+        "trigger_tau_true_s": trigger_tau_true,
+        "tau_error_pct": error_pct,
+        "peak_timestamp_s": peak_time,
+        "peak_score": peak_score,
+        "latency_s": max(0.0, peak_time - trigger_time),
+        "pass": error_pct <= TAU_TOLERANCE_PCT,
+        "false_trigger": false_trigger,
+    }
+
+
+def analyse_events_detector(
+    eta_on: float,
+    eta_off: float,
+    events_by_run: dict[str, list[dict[str, str]]],
+    trajectories: dict[str, dict[str, np.ndarray]],
+    results: dict[str, dict[str, str]],
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, Any],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    case_rows: list[dict[str, Any]] = []
+    events_vs_traj_rows: list[dict[str, Any]] = []
+
+    for run_id in results:
+        header = {h: results[run_id][h] for h in GRID_HEADERS}
+        traj = trajectories[run_id]
+        evs = events_by_run.get(run_id, [])
+
+        detector = ScalarEtaDetector()
+        bins = estimate_tau_series(evs) if estimate_tau_series is not None else []
+        metrics = run_events_case(detector, bins, traj, eta_on=eta_on, eta_off=eta_off)
+
+        tau_true_init = float(results[run_id]["tau_true_s"])
+        tau_hat_traj = float(results[run_id]["tau_hat_s"])
+        error_pct_traj = float(results[run_id]["error_pct"])
+
+        try:
+            tau_hat_ev = estimate_tau_events(evs) if estimate_tau_events is not None else math.nan
+        except Exception:
+            tau_hat_ev = math.nan
+
+        error_pct_ev = (
+            100.0 * abs(tau_hat_ev - tau_true_init) / tau_true_init
+            if math.isfinite(tau_hat_ev) and tau_true_init > 0
+            else math.nan
+        )
+
+        case_rows.append(
+            {
+                **header,
+                "detector": "events",
+                "tau_true_initial_s": results[run_id]["tau_true_s"],
+                "event_count": len(evs),
+                "tau_hat_events_s": tau_hat_ev,
+                "event_tau_error_pct": error_pct_ev,
+                **metrics,
+            }
+        )
+
+        events_vs_traj_rows.append(
+            {
+                **header,
+                "tau_true_s": tau_true_init,
+                "tau_hat_traj_s": tau_hat_traj,
+                "error_pct_traj": error_pct_traj,
+                "tau_hat_events_s": tau_hat_ev,
+                "error_pct_events": error_pct_ev,
+            }
+        )
+
+    summary = summarize(case_rows)
+    by_axis = summarize_by_axis(case_rows)
+
+    events_vs_traj_by_axis: list[dict[str, Any]] = []
+    for axis in AXES:
+        vals = sorted({row[axis] for row in events_vs_traj_rows})
+        for val in vals:
+            group = [row for row in events_vs_traj_rows if row[axis] == val]
+            traj_errs = [r["error_pct_traj"] for r in group if math.isfinite(r["error_pct_traj"])]
+            ev_errs = [r["error_pct_events"] for r in group if math.isfinite(r["error_pct_events"])]
+            events_vs_traj_by_axis.append(
+                {
+                    "axis": axis,
+                    "value": val,
+                    "cases": len(group),
+                    "mean_error_pct_traj": float(np.mean(traj_errs)) if traj_errs else math.nan,
+                    "median_error_pct_traj": float(np.median(traj_errs)) if traj_errs else math.nan,
+                    "mean_error_pct_events": float(np.mean(ev_errs)) if ev_errs else math.nan,
+                    "median_error_pct_events": float(np.median(ev_errs)) if ev_errs else math.nan,
+                }
+            )
+
+    return case_rows, summary, by_axis, events_vs_traj_rows, events_vs_traj_by_axis
+
+
+def write_comparison_plot(path: Path, rows: list[dict[str, Any]]) -> None:
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:  # pragma: no cover
+        return
+
+    axes = ("approach_speed_mps", "object_size_m", "lighting", "sensor_noise_px", "injected_latency_s")
+    fig, subplots = plt.subplots(1, 5, figsize=(18, 4), sharey=True)
+
+    for ax_idx, axis_name in enumerate(axes):
+        ax = subplots[ax_idx]
+        vals = sorted({float(r[axis_name]) for r in rows})
+        labels = [f"{v:g}" for v in vals]
+        p2_means = []
+        p3_means = []
+        for v in vals:
+            sub = [r for r in rows if float(r[axis_name]) == v]
+            p2_e = [float(r["error_pct_traj"]) for r in sub if math.isfinite(float(r["error_pct_traj"]))]
+            p3_e = [float(r["error_pct_events"]) for r in sub if math.isfinite(float(r["error_pct_events"]))]
+            p2_means.append(float(np.mean(p2_e)) if p2_e else 0.0)
+            p3_means.append(float(np.mean(p3_e)) if p3_e else 0.0)
+
+        x_indices = np.arange(len(vals))
+        width = 0.35
+        ax.bar(x_indices - width / 2, p2_means, width, label="Trajectory", color="#4a7ebb")
+        ax.bar(x_indices + width / 2, p3_means, width, label="Event-driven", color="#e27c3e")
+        ax.set_xticks(x_indices)
+        ax.set_xticklabels(labels)
+        ax.set_xlabel(axis_name.replace("_", " "))
+        if ax_idx == 0:
+            ax.set_ylabel("Mean |tau_hat - tau_true| error (%)")
+            ax.legend(frameon=True)
+        ax.grid(axis="y", alpha=0.25)
+
+    fig.suptitle("Time-to-Contact Error (%): Trajectory Baseline vs Event-Driven Model across Sweep Axes", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+
+
 def _rate(rows: list[dict[str, Any]], predicate) -> float:
     if not rows:
         return math.nan
@@ -312,6 +551,8 @@ CASE_FIELDS = [
     "latency_s",
     "pass",
     "false_trigger",
+    "tau_hat_events_s",
+    "event_tau_error_pct",
 ]
 
 
@@ -360,7 +601,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR, help="canonical Phase 2 sweep output")
     parser.add_argument("--output", type=Path, default=Path("/tmp/phase3_comparison"))
-    parser.add_argument("--detector", choices=("scalar", "network", "both"), default="both")
+    parser.add_argument("--detector", choices=("scalar", "network", "events", "both", "all"), default="both")
     parser.add_argument("--scalar-eta-on", type=float, default=SCALAR_ETA_ON)
     parser.add_argument("--scalar-eta-off", type=float, default=SCALAR_ETA_OFF)
     parser.add_argument("--tau-tolerance-pct", type=float, default=TAU_TOLERANCE_PCT)
@@ -380,22 +621,46 @@ def main() -> int:
     if missing_runs:
         raise SystemExit(f"trajectories.csv is missing runs: {missing_runs[:5]}")
 
-    names = ["scalar", "network"] if args.detector == "both" else [args.detector]
+    if args.detector == "all":
+        names = ["scalar", "network", "events"]
+    elif args.detector == "both":
+        names = ["scalar", "network"]
+    else:
+        names = [args.detector]
+
+    events_by_run: dict[str, list[dict[str, str]]] | None = None
+    if "events" in names:
+        events_by_run = load_events_by_run(events_path)
+
     case_rows_by_detector: dict[str, list[dict[str, Any]]] = {}
     summary_by_detector: dict[str, dict[str, Any]] = {}
     axes_by_detector: dict[str, list[dict[str, Any]]] = {}
     for name in names:
-        detector_factory, eta_on, eta_off = build_detector(name)
-        if name == "scalar":
-            eta_on, eta_off = args.scalar_eta_on, args.scalar_eta_off
-        case_rows, summary, by_axis = analyse_detector(detector_factory, eta_on, eta_off, trajectories, results, event_counts)
+        if name == "events":
+            assert events_by_run is not None
+            case_rows, summary, by_axis, events_vs_traj, events_vs_traj_by_axis = analyse_events_detector(
+                args.scalar_eta_on, args.scalar_eta_off, events_by_run, trajectories, results
+            )
+            write_outputs(args.output, name, case_rows, summary, by_axis)
+            _write_csv(args.output / "events_vs_trajectory.csv", list(events_vs_traj[0]), events_vs_traj)
+            _write_csv(args.output / "summary_events_vs_trajectory.csv", list(events_vs_traj_by_axis[0]), events_vs_traj_by_axis)
+            write_comparison_plot(args.output / "event_vs_traj_error.png", events_vs_traj)
+            print("events_vs_trajectory.csv written")
+            print("summary_events_vs_trajectory.csv written")
+            print("event_vs_traj_error.png generated")
+        else:
+            detector_factory, eta_on, eta_off = build_detector(name)
+            if name == "scalar":
+                eta_on, eta_off = args.scalar_eta_on, args.scalar_eta_off
+            case_rows, summary, by_axis = analyse_detector(detector_factory, eta_on, eta_off, trajectories, results, event_counts)
+            write_outputs(args.output, name, case_rows, summary, by_axis)
+
         case_rows_by_detector[name] = case_rows
         summary_by_detector[name] = summary
         axes_by_detector[name] = by_axis
-        write_outputs(args.output, name, case_rows, summary, by_axis)
         print_summary(name, summary)
 
-    if args.detector == "both":
+    if len(names) > 1:
         comparison = build_comparison(summary_by_detector, axes_by_detector)
         _write_csv(args.output / "comparison.csv", list(comparison[0]), comparison)
         print("comparison.csv written")
