@@ -76,6 +76,11 @@ except ImportError:  # pragma: no cover
     estimate_tau_events = None
     estimate_tau_series = None
 
+try:
+    from lgmd.rmo_filter import filter_expansion_bins_rmo
+except ImportError:  # pragma: no cover
+    filter_expansion_bins_rmo = None
+
 DEFAULT_DATA_DIR = ROOT / "data" / "phase3_baseline"
 
 SCALAR_ETA_ON = 0.5  # 1/s, i.e. a tau <= 2 s time-to-contact gate
@@ -356,6 +361,10 @@ def analyse_events_detector(
     events_by_run: dict[str, list[dict[str, str]]],
     trajectories: dict[str, dict[str, np.ndarray]],
     results: dict[str, dict[str, str]],
+    *,
+    use_rmo: bool = False,
+    rmo_threshold: float = 0.5,
+    rmo_mode: str = "two_region",
 ) -> tuple[
     list[dict[str, Any]],
     dict[str, Any],
@@ -365,6 +374,7 @@ def analyse_events_detector(
 ]:
     case_rows: list[dict[str, Any]] = []
     events_vs_traj_rows: list[dict[str, Any]] = []
+    detector_name = "events_rmo" if use_rmo else "events"
 
     for run_id in results:
         header = {h: results[run_id][h] for h in GRID_HEADERS}
@@ -373,6 +383,11 @@ def analyse_events_detector(
 
         detector = ScalarEtaDetector()
         bins = estimate_tau_series(evs) if estimate_tau_series is not None else []
+        if use_rmo and filter_expansion_bins_rmo is not None:
+            bins, _ = filter_expansion_bins_rmo(
+                bins, evs, rmo_threshold=rmo_threshold, mode=rmo_mode
+            )
+
         metrics = run_events_case(detector, bins, traj, eta_on=eta_on, eta_off=eta_off)
 
         tau_true_init = float(results[run_id]["tau_true_s"])
@@ -393,7 +408,7 @@ def analyse_events_detector(
         case_rows.append(
             {
                 **header,
-                "detector": "events",
+                "detector": detector_name,
                 "tau_true_initial_s": results[run_id]["tau_true_s"],
                 "event_count": len(evs),
                 "tau_hat_events_s": tau_hat_ev,
@@ -601,10 +616,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR, help="canonical Phase 2 sweep output")
     parser.add_argument("--output", type=Path, default=Path("/tmp/phase3_comparison"))
-    parser.add_argument("--detector", choices=("scalar", "network", "events", "both", "all"), default="both")
+    parser.add_argument("--detector", choices=("scalar", "network", "events", "events_rmo", "both", "all"), default="both")
     parser.add_argument("--scalar-eta-on", type=float, default=SCALAR_ETA_ON)
     parser.add_argument("--scalar-eta-off", type=float, default=SCALAR_ETA_OFF)
     parser.add_argument("--tau-tolerance-pct", type=float, default=TAU_TOLERANCE_PCT)
+    parser.add_argument("--rmo-threshold", type=float, default=0.5, help="RMO joint activation threshold")
+    parser.add_argument("--rmo-mode", choices=("two_region", "four_quadrant"), default="two_region", help="RMO spatial pooling mode")
     args = parser.parse_args()
 
     results_path = args.data_dir / "results.csv"
@@ -622,32 +639,41 @@ def main() -> int:
         raise SystemExit(f"trajectories.csv is missing runs: {missing_runs[:5]}")
 
     if args.detector == "all":
-        names = ["scalar", "network", "events"]
+        names = ["scalar", "network", "events", "events_rmo"]
     elif args.detector == "both":
         names = ["scalar", "network"]
     else:
         names = [args.detector]
 
     events_by_run: dict[str, list[dict[str, str]]] | None = None
-    if "events" in names:
+    if any(n in names for n in ("events", "events_rmo")):
         events_by_run = load_events_by_run(events_path)
 
     case_rows_by_detector: dict[str, list[dict[str, Any]]] = {}
     summary_by_detector: dict[str, dict[str, Any]] = {}
     axes_by_detector: dict[str, list[dict[str, Any]]] = {}
     for name in names:
-        if name == "events":
+        if name in ("events", "events_rmo"):
             assert events_by_run is not None
+            use_rmo = (name == "events_rmo")
             case_rows, summary, by_axis, events_vs_traj, events_vs_traj_by_axis = analyse_events_detector(
-                args.scalar_eta_on, args.scalar_eta_off, events_by_run, trajectories, results
+                args.scalar_eta_on,
+                args.scalar_eta_off,
+                events_by_run,
+                trajectories,
+                results,
+                use_rmo=use_rmo,
+                rmo_threshold=args.rmo_threshold,
+                rmo_mode=args.rmo_mode,
             )
             write_outputs(args.output, name, case_rows, summary, by_axis)
-            _write_csv(args.output / "events_vs_trajectory.csv", list(events_vs_traj[0]), events_vs_traj)
-            _write_csv(args.output / "summary_events_vs_trajectory.csv", list(events_vs_traj_by_axis[0]), events_vs_traj_by_axis)
-            write_comparison_plot(args.output / "event_vs_traj_error.png", events_vs_traj)
-            print("events_vs_trajectory.csv written")
-            print("summary_events_vs_trajectory.csv written")
-            print("event_vs_traj_error.png generated")
+            if not (args.output / "events_vs_trajectory.csv").is_file():
+                _write_csv(args.output / "events_vs_trajectory.csv", list(events_vs_traj[0]), events_vs_traj)
+                _write_csv(args.output / "summary_events_vs_trajectory.csv", list(events_vs_traj_by_axis[0]), events_vs_traj_by_axis)
+                write_comparison_plot(args.output / "event_vs_traj_error.png", events_vs_traj)
+                print("events_vs_trajectory.csv written")
+                print("summary_events_vs_trajectory.csv written")
+                print("event_vs_traj_error.png generated")
         else:
             detector_factory, eta_on, eta_off = build_detector(name)
             if name == "scalar":

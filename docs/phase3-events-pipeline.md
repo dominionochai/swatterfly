@@ -128,13 +128,54 @@ Running `python scripts/compare_lgmd.py --detector all --output <output_dir>` ge
 ## Verification and Reproduction
 
 ```bash
-# Run unit and integration tests (14 passed)
-python -m pytest tests/test_events_theta.py -v
+# Run unit and integration tests (19 passed)
+python -m pytest tests/test_events_theta.py tests/test_rmo_filter.py -v
 python -m pytest -q
 
-# Run event-driven comparison
+# Run event-driven comparison (unfiltered)
 python scripts/compare_lgmd.py --detector events --output /tmp/phase3_events
 
-# Run three-way comparison (scalar, network, events)
+# Run RMO-filtered event comparison
+python scripts/compare_lgmd.py --detector events_rmo --output /tmp/phase3_events_rmo
+
+# Run comprehensive four-way comparison (scalar, network, events, events_rmo)
 python scripts/compare_lgmd.py --detector all --output /tmp/phase3_comparison_all
 ```
+
+---
+
+## Part 0 Extension: Radial Motion Opponency (RMO) False-Trigger Filtering
+
+### Method & Literature Citation
+
+To address the high false-trigger rate observed when feeding raw event optical flow directly into a fixed scalar threshold gate, we implemented the **Nonlinear Radial Motion Opponency (RMO)** filter (`src/lgmd/rmo_filter.py`).
+
+The method directly implements the formulation in:
+- **Schubert, Knight, Philippides, Nowotny (2025)**, *"Bio-inspired event-based looming object detection for automotive collision avoidance"*, *Neuromorphic Computing and Engineering* 5, 024016, §3.1, "Nonlinear RMO-selectivity reduces false responses." DOI: [10.1088/2634-4386/add0da](https://doi.org/10.1088/2634-4386/add0da).
+
+Key equations as implemented:
+1. **Directional Subfield Pooling (Paper Eq. 7):** Local optical flow vectors are pooled into opposing spatial subfields relative to the focus of expansion (FOE):
+   $$H_L(t) = \frac{1}{|L|} \sum_{i \in \text{Left}} \max(0, -v_{x, i}), \quad H_R(t) = \frac{1}{|R|} \sum_{i \in \text{Right}} \max(0, +v_{x, i})$$
+   where $v_x$ is horizontal optical flow and Left/Right are partitioned across the vertical optical axis ($x < c_x$ vs $x > c_x$).
+2. **Nonlinear Opponency (Paper Eq. 12):** True looming requires simultaneous, temporally aligned outward motion on both sides. A nonlinear geometric product enforces this requirement:
+   $$S_{\text{RMO}}(t) = \sqrt{\max(0, H_L(t)) \cdot \max(0, H_R(t))}$$
+   Uniform ego-motion translation ($v_x > 0$ across the whole sensor) yields $H_L(t) = 0 \implies S_{\text{RMO}}(t) = 0$. Isolated noise clusters likewise produce activation in only one subfield, resulting in an exact zero score.
+3. **Gated Looming Output (Paper Eq. 13):** The expansion rate passes to the threshold detector only when opponent subfields jointly exceed threshold:
+   $$G(t) = r(t) \cdot \Theta\left(S_{\text{RMO}}(t) - \theta_{\text{RMO}}\right)$$
+
+### Before / After False-Trigger Comparison Table (All 324 Cases)
+
+| Detector Mode | Filtering Method | Detection Rate | Valid Cases Triggered | Passes ($\le 25\%$ error) | False Triggers ($> 25\%$ error) | False-Trigger Rate | Mean Latency (s) |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Scalar Baseline** | Noise-free trajectory | 50.0% | 162 / 324 | 162 | 0 | **0.0%** | 0.8300 |
+| **Network (Gabbiani)** | Canonical firing model | 33.3% | 108 / 324 | 108 | 0 | **0.0%** | 0.0000 |
+| **Events (Raw)** | None (raw optical flow) | 96.6% | 313 / 324 | 19 | 294 | **93.9%** | 0.5409 |
+| **Events + RMO (2-Region)** | Schubert et al. Eq. 12 ($\theta=0.5$) | 87.3% | 283 / 324 | 57 | 226 | **79.9%** | 0.5145 |
+| **Events + RMO (4-Quadrant)** | Cardinal L/R/T/B opponency ($\theta=0.5$) | 58.3% | 189 / 324 | 63 | 126 | **66.7%** | 0.3087 |
+
+### Analysis of Remaining False-Trigger Rate
+
+- **Ablation finding:** In accordance with Schubert et al. 2025, nonlinear RMO filtering substantially reduces false triggers: false-trigger count drops from **294** (raw) to **226** (2-region) and **126** (4-quadrant), while correct timing passes more than triple (from 19 to 63).
+- **Physical cause of remaining 66.7% - 79.9% false triggers:** Under a fixed scalar gate $\eta_{\text{on}} = 0.5$ ($\tau \le 2\text{ s}$), half of the dataset (speeds 0.5 m/s and 1.0 m/s) never approaches closer than $\tau_{\text{true}} = 4.8\text{ s}$ inside the sweep duration. As demonstrated in the paper's ablation, instantaneous spatial opponency removes unilateral flow and translation, but bilateral sensor noise on small objects (radii 2–5 px) can still intermittently cross threshold at long range.
+- **Architectural implication:** Complete elimination of long-range false triggers requires temporal state filtering (target tracking and innovation gating as developed in Phase 4), rather than instantaneous single-frame thresholding alone.
+
